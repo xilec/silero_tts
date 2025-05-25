@@ -28,6 +28,9 @@ def parse_arguments():
     parser.add_argument('--test_eng', 
                        action='store_true',
                        help='Тестировать все английские голоса (en_0 до en_117)')
+    parser.add_argument('--dump_chunks',
+                       action='store_true',
+                       help='Сохранять чанки в отдельный файл для отладки')
     
     try:
         args = parser.parse_args()
@@ -256,7 +259,7 @@ def process_chunk(chunk_info):
             'error': str(e)
         }
 
-def process_text(text, input_file, models, eng_speaker=None, show_stats=True):
+def process_text(text, input_file, models, eng_speaker=None, show_stats=True, dump_chunks=False):
     """
     Обработка текста и генерация аудио
     
@@ -266,6 +269,7 @@ def process_text(text, input_file, models, eng_speaker=None, show_stats=True):
         models (tuple): Кортеж (model_ru, model_en)
         eng_speaker (str, optional): Идентификатор английского спикера
         show_stats (bool): Показывать ли статистику выполнения
+        dump_chunks (bool): Сохранять ли чанки в файл для отладки
     """
     start_time = time.time()
     model_ru, model_en = models
@@ -282,6 +286,14 @@ def process_text(text, input_file, models, eng_speaker=None, show_stats=True):
     # Разделяем текст на части по языкам
     text_chunks = split_by_language(text)
     num_chunks = len(text_chunks)
+    
+    # Сохраняем чанки в файл, если указан флаг
+    if dump_chunks:
+        chunks_file = f"{filename}_chunks.txt"
+        with open(chunks_file, 'w', encoding='utf-8') as f:
+            for i, (lang, chunk) in enumerate(text_chunks, 1):
+                f.write(f"Чанк {i}/{num_chunks} [{lang}]:\n{chunk}\n{'='*50}\n")
+        print(f"Чанки сохранены в файл: {chunks_file}")
     
     if show_stats:
         print(f"Количество частей для обработки: {num_chunks}")
@@ -404,7 +416,7 @@ def main():
         test_english_speakers(text, (model_ru, model_en), input_file)
     else:
         # Стандартная обработка одним спикером
-        process_text(text, input_file, (model_ru, model_en))
+        process_text(text, input_file, (model_ru, model_en), dump_chunks=args.dump_chunks)
 
 if __name__ == '__main__':
     main()
