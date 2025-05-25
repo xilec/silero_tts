@@ -8,6 +8,7 @@ from num2words import num2words
 import argparse
 import os
 import sys
+import time
 
 def validate_file_extension(filename):
     """Проверка расширения файла"""
@@ -198,7 +199,21 @@ def split_by_language(text, max_length=900):
     
     return chunks
 
+def get_audio_duration(sample_rate, num_samples):
+    """Вычисляет длительность аудио в секундах"""
+    return num_samples / sample_rate
+
+def format_time(seconds):
+    """Форматирует время в читаемый вид"""
+    minutes = int(seconds // 60)
+    seconds = seconds % 60
+    if minutes > 0:
+        return f"{minutes} мин. {seconds:.1f} сек."
+    return f"{seconds:.1f} сек."
+
 def main():
+    start_time = time.time()
+    
     # Получаем аргументы командной строки
     args = parse_arguments()
     input_file = args.input
@@ -216,6 +231,7 @@ def main():
     device = torch.device('cpu')
     torch.set_num_threads(4)
     
+    model_loading_start = time.time()
     print("Загрузка русской модели...")
     model_ru, _ = torch.hub.load(repo_or_dir='snakers4/silero-models',
                                 model='silero_tts',
@@ -230,17 +246,28 @@ def main():
                                 speaker='v3_en')
     model_en.to(device)
     
+    model_loading_time = time.time() - model_loading_start
+    print(f"Время загрузки моделей: {format_time(model_loading_time)}")
+    
     # Чтение текста из файла
-    print(f"Чтение текста из файла {input_file}...")
+    print(f"\nЧтение текста из файла {input_file}...")
     with open(input_file, 'r', encoding='utf-8') as f:
         text = f.read().strip()
     
+    # Выводим информацию о размере текста
+    text_size = len(text)
+    print(f"Размер текста: {text_size:,} символов")
+    
     # Разделяем текст на части по языкам
     text_chunks = split_by_language(text)
+    print(f"Количество частей для обработки: {len(text_chunks)}")
     
     # Синтез речи для каждой части
     audio_chunks = []
+    processing_start = time.time()
+    
     for i, (lang, chunk) in enumerate(text_chunks, 1):
+        chunk_start = time.time()
         print(f"Обработка части {i} из {len(text_chunks)} ({lang})...")
         try:
             if lang == 'ru':
@@ -258,17 +285,36 @@ def main():
             audio_chunks.append(audio.numpy())
             audio_chunks.append(pause)
             
+            chunk_time = time.time() - chunk_start
+            print(f"  Часть обработана за {format_time(chunk_time)}")
+            
         except Exception as e:
             print(f"Ошибка при обработке части: {chunk}")
             print(f"Ошибка: {str(e)}")
             continue
     
+    processing_time = time.time() - processing_start
+    print(f"\nВремя обработки текста: {format_time(processing_time)}")
+    
     # Объединяем все части
     if audio_chunks:
         combined_audio = np.concatenate(audio_chunks)
-    
+        
+        # Вычисляем длительность аудио
+        audio_duration = get_audio_duration(48000, len(combined_audio))
+        
         # Сохранение аудио в файл
         sf.write(output_file, combined_audio, 48000)
+        
+        # Выводим статистику
+        total_time = time.time() - start_time
+        print("\nСтатистика:")
+        print(f"Размер исходного текста: {text_size:,} символов")
+        print(f"Длительность аудио: {format_time(audio_duration)}")
+        print(f"Общее время выполнения: {format_time(total_time)}")
+        print(f"  - Загрузка моделей: {format_time(model_loading_time)}")
+        print(f"  - Обработка текста: {format_time(processing_time)}")
+        print(f"  - Накладные расходы: {format_time(total_time - model_loading_time - processing_time)}")
         print(f"Аудио файл сохранен как '{output_file}'")
     else:
         print("Не удалось создать аудио: нет обработанных частей текста")
