@@ -12,6 +12,36 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import multiprocessing
 
+# Словарь фонетического произношения английских букв
+ENGLISH_PHONETIC = {
+    'A': 'ay',
+    'B': 'bee',
+    'C': 'see',
+    'D': 'dee',
+    'E': 'ee',
+    'F': 'ef',
+    'G': 'gee',
+    'H': 'aitch',
+    'I': 'eye',
+    'J': 'jay',
+    'K': 'kay',
+    'L': 'el',
+    'M': 'em',
+    'N': 'en',
+    'O': 'oh',
+    'P': 'pee',
+    'Q': 'queue',
+    'R': 'ar',
+    'S': 'es',
+    'T': 'tee',
+    'U': 'you',
+    'V': 'vee',
+    'W': 'double you',
+    'X': 'ex',
+    'Y': 'why',
+    'Z': 'zee'
+}
+
 def validate_file_extension(filename):
     """Проверка расширения файла"""
     if not filename.lower().endswith('.txt'):
@@ -106,8 +136,17 @@ def normalize_text(text):
 
 def process_abbreviations(text):
     """Обработка аббревиатур"""
-    # Добавление пробелов между буквами в аббревиатурах
-    text = re.sub(r'([А-ЯA-Z]{2,})', lambda m: ' '.join(list(m.group(1))), text)
+    def replace_eng_abbr(match):
+        """Заменяет английские буквы на их фонетическое произношение"""
+        abbr = match.group(1)
+        # Проверяем, что это английская аббревиатура (содержит только английские буквы)
+        if all(c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' for c in abbr):
+            return ' '.join(ENGLISH_PHONETIC.get(c, c) for c in abbr)
+        # Для русских аббревиатур оставляем пробелы между буквами
+        return ' '.join(list(abbr))
+    
+    # Находим все последовательности заглавных букв (2 и более)
+    text = re.sub(r'([А-ЯA-Z]{2,})', replace_eng_abbr, text)
     return text
 
 def improve_pronunciation(text):
