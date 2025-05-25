@@ -25,6 +25,9 @@ def parse_arguments():
                        type=validate_file_extension,
                        default='text.txt',
                        help='Путь к входному текстовому файлу (по умолчанию: text.txt)')
+    parser.add_argument('--test_eng', 
+                       action='store_true',
+                       help='Тестировать все английские голоса (en_0 до en_117)')
     
     try:
         args = parser.parse_args()
@@ -215,7 +218,7 @@ def format_time(seconds):
 
 def process_chunk(chunk_info):
     """Обработка одного текстового фрагмента"""
-    i, (lang, chunk), models = chunk_info
+    i, (lang, chunk), models, speaker_override = chunk_info
     model_ru, model_en = models
     
     chunk_start = time.time()
@@ -225,8 +228,9 @@ def process_chunk(chunk_info):
                                      speaker='xenia',
                                      sample_rate=48000)
         else:
+            speaker = speaker_override if speaker_override else 'en_9'
             audio = model_en.apply_tts(text=chunk,
-                                     speaker='en_1',
+                                     speaker=speaker,
                                      sample_rate=48000)
         
         # Добавляем небольшую паузу между частями (0.2 секунды тишины)
@@ -252,23 +256,123 @@ def process_chunk(chunk_info):
             'error': str(e)
         }
 
-def main():
-    start_time = time.time()
+def process_text(text, input_file, models, eng_speaker=None, show_stats=True):
+    """
+    Обработка текста и генерация аудио
     
-    # Получаем аргументы командной строки
-    args = parse_arguments()
-    input_file = args.input
+    Args:
+        text (str): Исходный текст
+        input_file (str): Путь к входному файлу
+        models (tuple): Кортеж (model_ru, model_en)
+        eng_speaker (str, optional): Идентификатор английского спикера
+        show_stats (bool): Показывать ли статистику выполнения
+    """
+    start_time = time.time()
+    model_ru, model_en = models
     
     # Формируем имя выходного файла
     filename, _ = os.path.splitext(input_file)
-    output_file = f"{filename}.wav"
+    output_file = f"{filename}_{eng_speaker}.wav" if eng_speaker else f"{filename}.wav"
+    
+    # Выводим информацию о размере текста
+    text_size = len(text)
+    if show_stats:
+        print(f"Размер текста: {text_size:,} символов")
+    
+    # Разделяем текст на части по языкам
+    text_chunks = split_by_language(text)
+    num_chunks = len(text_chunks)
+    
+    if show_stats:
+        print(f"Количество частей для обработки: {num_chunks}")
+    
+    # Определяем оптимальное количество потоков
+    num_threads = min(num_chunks, multiprocessing.cpu_count())
+    if show_stats:
+        print(f"Используется потоков: {num_threads}")
+    
+    # Подготовка данных для параллельной обработки
+    chunk_data = [
+        (i, chunk, (model_ru, model_en), eng_speaker)
+        for i, chunk in enumerate(text_chunks, 1)
+    ]
+    
+    # Синтез речи для каждой части в параллельном режиме
+    audio_chunks = [None] * num_chunks
+    processing_start = time.time()
+    
+    with ThreadPoolExecutor(max_workers=num_threads) as executor:
+        future_to_chunk = {
+            executor.submit(process_chunk, chunk_info): chunk_info[0]
+            for chunk_info in chunk_data
+        }
+        
+        for future in as_completed(future_to_chunk):
+            result = future.result()
+            chunk_index = result['index']
+            
+            if result['success']:
+                msg = f"Часть {chunk_index} из {num_chunks} обработана"
+                if show_stats:
+                    msg += f" за {format_time(result['time'])}"
+                print(msg)
+                audio_chunks[chunk_index - 1] = [result['audio'], result['pause']]
+            else:
+                print(f"Ошибка при обработке части {chunk_index}: {result['error']}")
+    
+    processing_time = time.time() - processing_start
+    if show_stats:
+        print(f"\nВремя обработки текста: {format_time(processing_time)}")
+    
+    # Объединяем все части
+    if any(chunk is not None for chunk in audio_chunks):
+        combined_chunks = []
+        for chunk_pair in audio_chunks:
+            if chunk_pair is not None:
+                combined_chunks.extend(chunk_pair)
+        
+        combined_audio = np.concatenate(combined_chunks)
+        
+        # Сохранение аудио в файл
+        sf.write(output_file, combined_audio, 48000)
+        
+        if show_stats:
+            # Вычисляем длительность аудио
+            audio_duration = get_audio_duration(48000, len(combined_audio))
+            
+            # Выводим статистику
+            total_time = time.time() - start_time
+            print("\nСтатистика:")
+            print(f"Размер исходного текста: {text_size:,} символов")
+            print(f"Длительность аудио: {format_time(audio_duration)}")
+            print(f"Общее время выполнения: {format_time(total_time)}")
+            print(f"  - Обработка текста: {format_time(processing_time)}")
+            print(f"  - Накладные расходы: {format_time(total_time - processing_time)}")
+        
+        print(f"Аудио файл сохранен как '{output_file}'")
+        return True
+    else:
+        print("Не удалось создать аудио: нет обработанных частей текста")
+        return False
+
+def test_english_speakers(text, models, input_file):
+    """Тестирование всех английских спикеров"""
+    for speaker_idx in range(118):  # от 0 до 117
+        speaker = f'en_{speaker_idx}'
+        print(f"\nТестирование спикера {speaker}")
+        process_text(text, input_file, models, eng_speaker=speaker, show_stats=False)
+
+def main():
+    # Получаем аргументы командной строки
+    args = parse_arguments()
+    input_file = args.input
     
     # Проверяем существование входного файла
     if not os.path.exists(input_file):
         print(f"Ошибка: Файл {input_file} не найден")
         return
     
-    # Загрузка русской модели
+    # Загрузка моделей
     device = torch.device('cpu')
     torch.set_num_threads(4)
     
@@ -295,78 +399,12 @@ def main():
     with open(input_file, 'r', encoding='utf-8') as f:
         text = f.read().strip()
     
-    # Выводим информацию о размере текста
-    text_size = len(text)
-    print(f"Размер текста: {text_size:,} символов")
-    
-    # Разделяем текст на части по языкам
-    text_chunks = split_by_language(text)
-    num_chunks = len(text_chunks)
-    print(f"Количество частей для обработки: {num_chunks}")
-    
-    # Определяем оптимальное количество потоков
-    num_threads = min(num_chunks, multiprocessing.cpu_count())
-    print(f"Используется потоков: {num_threads}")
-    
-    # Подготовка данных для параллельной обработки
-    chunk_data = [
-        (i, chunk, (model_ru, model_en))
-        for i, chunk in enumerate(text_chunks, 1)
-    ]
-    
-    # Синтез речи для каждой части в параллельном режиме
-    audio_chunks = [None] * num_chunks
-    processing_start = time.time()
-    
-    with ThreadPoolExecutor(max_workers=num_threads) as executor:
-        # Запускаем задачи
-        future_to_chunk = {
-            executor.submit(process_chunk, chunk_info): chunk_info[0]
-            for chunk_info in chunk_data
-        }
-        
-        # Собираем результаты по мере их готовности
-        for future in as_completed(future_to_chunk):
-            result = future.result()
-            chunk_index = result['index']
-            
-            if result['success']:
-                print(f"Часть {chunk_index} из {num_chunks} обработана за {format_time(result['time'])}")
-                audio_chunks[chunk_index - 1] = [result['audio'], result['pause']]
-            else:
-                print(f"Ошибка при обработке части {chunk_index}: {result['error']}")
-    
-    processing_time = time.time() - processing_start
-    print(f"\nВремя обработки текста: {format_time(processing_time)}")
-    
-    # Объединяем все части
-    if any(chunk is not None for chunk in audio_chunks):
-        # Собираем все успешно обработанные части
-        combined_chunks = []
-        for chunk_pair in audio_chunks:
-            if chunk_pair is not None:
-                combined_chunks.extend(chunk_pair)
-        
-        combined_audio = np.concatenate(combined_chunks)
-        
-        # Вычисляем длительность аудио
-        audio_duration = get_audio_duration(48000, len(combined_audio))
-        
-        # Сохранение аудио в файл
-        sf.write(output_file, combined_audio, 48000)
-        
-        # Выводим статистику
-        total_time = time.time() - start_time
-        print("\nСтатистика:")
-        print(f"Размер исходного текста: {text_size:,} символов")
-        print(f"Длительность аудио: {format_time(audio_duration)}")
-        print(f"Общее время выполнения: {format_time(total_time)}")
-        print(f"  - Загрузка моделей: {format_time(model_loading_time)}")
-        print(f"  - Обработка текста: {format_time(processing_time)}")
-        print(f"  - Накладные расходы: {format_time(total_time - model_loading_time - processing_time)}")
-        print(f"Аудио файл сохранен как '{output_file}'")
+    if args.test_eng:
+        # Запускаем тестирование всех английских спикеров
+        test_english_speakers(text, (model_ru, model_en), input_file)
     else:
-        print("Не удалось создать аудио: нет обработанных частей текста")
+        # Стандартная обработка одним спикером
+        process_text(text, input_file, (model_ru, model_en))
 
 if __name__ == '__main__':
     main()
