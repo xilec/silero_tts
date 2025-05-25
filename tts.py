@@ -87,7 +87,7 @@ for i, (lang, chunk) in enumerate(text_chunks, 1):
                                      sample_rate=48000)
         else:
             audio = model_en.apply_tts(text=chunk,
-                                     speaker='en_0',
+                                     speaker='en_1',
                                      sample_rate=48000)
         
         # Добавляем небольшую паузу между частями (0.2 секунды тишины)
