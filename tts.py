@@ -9,6 +9,8 @@ import argparse
 import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import multiprocessing
 
 def validate_file_extension(filename):
     """Проверка расширения файла"""
@@ -211,6 +213,45 @@ def format_time(seconds):
         return f"{minutes} мин. {seconds:.1f} сек."
     return f"{seconds:.1f} сек."
 
+def process_chunk(chunk_info):
+    """Обработка одного текстового фрагмента"""
+    i, (lang, chunk), models = chunk_info
+    model_ru, model_en = models
+    
+    chunk_start = time.time()
+    try:
+        if lang == 'ru':
+            audio = model_ru.apply_tts(text=chunk,
+                                     speaker='xenia',
+                                     sample_rate=48000)
+        else:
+            audio = model_en.apply_tts(text=chunk,
+                                     speaker='en_1',
+                                     sample_rate=48000)
+        
+        # Добавляем небольшую паузу между частями (0.2 секунды тишины)
+        pause = np.zeros(int(48000 * 0.2))
+        
+        chunk_time = time.time() - chunk_start
+        return {
+            'index': i,
+            'audio': audio.numpy(),
+            'pause': pause,
+            'time': chunk_time,
+            'success': True,
+            'error': None
+        }
+        
+    except Exception as e:
+        return {
+            'index': i,
+            'audio': None,
+            'pause': None,
+            'time': time.time() - chunk_start,
+            'success': False,
+            'error': str(e)
+        }
+
 def main():
     start_time = time.time()
     
@@ -260,45 +301,53 @@ def main():
     
     # Разделяем текст на части по языкам
     text_chunks = split_by_language(text)
-    print(f"Количество частей для обработки: {len(text_chunks)}")
+    num_chunks = len(text_chunks)
+    print(f"Количество частей для обработки: {num_chunks}")
     
-    # Синтез речи для каждой части
-    audio_chunks = []
+    # Определяем оптимальное количество потоков
+    num_threads = min(num_chunks, multiprocessing.cpu_count())
+    print(f"Используется потоков: {num_threads}")
+    
+    # Подготовка данных для параллельной обработки
+    chunk_data = [
+        (i, chunk, (model_ru, model_en))
+        for i, chunk in enumerate(text_chunks, 1)
+    ]
+    
+    # Синтез речи для каждой части в параллельном режиме
+    audio_chunks = [None] * num_chunks
     processing_start = time.time()
     
-    for i, (lang, chunk) in enumerate(text_chunks, 1):
-        chunk_start = time.time()
-        print(f"Обработка части {i} из {len(text_chunks)} ({lang})...")
-        try:
-            if lang == 'ru':
-                audio = model_ru.apply_tts(text=chunk,
-                                         speaker='xenia',
-                                         sample_rate=48000)
+    with ThreadPoolExecutor(max_workers=num_threads) as executor:
+        # Запускаем задачи
+        future_to_chunk = {
+            executor.submit(process_chunk, chunk_info): chunk_info[0]
+            for chunk_info in chunk_data
+        }
+        
+        # Собираем результаты по мере их готовности
+        for future in as_completed(future_to_chunk):
+            result = future.result()
+            chunk_index = result['index']
+            
+            if result['success']:
+                print(f"Часть {chunk_index} из {num_chunks} обработана за {format_time(result['time'])}")
+                audio_chunks[chunk_index - 1] = [result['audio'], result['pause']]
             else:
-                audio = model_en.apply_tts(text=chunk,
-                                         speaker='en_1',
-                                         sample_rate=48000)
-            
-            # Добавляем небольшую паузу между частями (0.2 секунды тишины)
-            pause = np.zeros(int(48000 * 0.2))
-            
-            audio_chunks.append(audio.numpy())
-            audio_chunks.append(pause)
-            
-            chunk_time = time.time() - chunk_start
-            print(f"  Часть обработана за {format_time(chunk_time)}")
-            
-        except Exception as e:
-            print(f"Ошибка при обработке части: {chunk}")
-            print(f"Ошибка: {str(e)}")
-            continue
+                print(f"Ошибка при обработке части {chunk_index}: {result['error']}")
     
     processing_time = time.time() - processing_start
     print(f"\nВремя обработки текста: {format_time(processing_time)}")
     
     # Объединяем все части
-    if audio_chunks:
-        combined_audio = np.concatenate(audio_chunks)
+    if any(chunk is not None for chunk in audio_chunks):
+        # Собираем все успешно обработанные части
+        combined_chunks = []
+        for chunk_pair in audio_chunks:
+            if chunk_pair is not None:
+                combined_chunks.extend(chunk_pair)
+        
+        combined_audio = np.concatenate(combined_chunks)
         
         # Вычисляем длительность аудио
         audio_duration = get_audio_duration(48000, len(combined_audio))
