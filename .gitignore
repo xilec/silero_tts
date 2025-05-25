@@ -188,5 +188,5 @@ cython_debug/
 .cursorindexingignore
 
 # working files
-output.wav
-text.txt
+text*.txt
+text*.wav
