@@ -5,6 +5,30 @@ import re
 from datetime import datetime
 import unicodedata
 from num2words import num2words
+import argparse
+import os
+import sys
+
+def validate_file_extension(filename):
+    """Проверка расширения файла"""
+    if not filename.lower().endswith('.txt'):
+        raise argparse.ArgumentTypeError('Файл должен иметь расширение .txt')
+    return filename
+
+def parse_arguments():
+    """Обработка аргументов командной строки"""
+    parser = argparse.ArgumentParser(description='Преобразование текста в речь')
+    parser.add_argument('--input', '-i', 
+                       type=validate_file_extension,
+                       default='text.txt',
+                       help='Путь к входному текстовому файлу (по умолчанию: text.txt)')
+    
+    try:
+        args = parser.parse_args()
+        return args
+    except argparse.ArgumentTypeError as e:
+        print(f"Ошибка: {str(e)}")
+        sys.exit(1)
 
 def convert_number_to_words(number_str):
     """Конвертация числа в слова"""
@@ -174,62 +198,80 @@ def split_by_language(text, max_length=900):
     
     return chunks
 
-# Загрузка русской модели
-device = torch.device('cpu')
-torch.set_num_threads(4)
+def main():
+    # Получаем аргументы командной строки
+    args = parse_arguments()
+    input_file = args.input
+    
+    # Формируем имя выходного файла
+    filename, _ = os.path.splitext(input_file)
+    output_file = f"{filename}.wav"
+    
+    # Проверяем существование входного файла
+    if not os.path.exists(input_file):
+        print(f"Ошибка: Файл {input_file} не найден")
+        return
+    
+    # Загрузка русской модели
+    device = torch.device('cpu')
+    torch.set_num_threads(4)
+    
+    print("Загрузка русской модели...")
+    model_ru, _ = torch.hub.load(repo_or_dir='snakers4/silero-models',
+                                model='silero_tts',
+                                language='ru',
+                                speaker='v4_ru')
+    model_ru.to(device)
+    
+    print("Загрузка английской модели...")
+    model_en, _ = torch.hub.load(repo_or_dir='snakers4/silero-models',
+                                model='silero_tts',
+                                language='en',
+                                speaker='v3_en')
+    model_en.to(device)
+    
+    # Чтение текста из файла
+    print(f"Чтение текста из файла {input_file}...")
+    with open(input_file, 'r', encoding='utf-8') as f:
+        text = f.read().strip()
+    
+    # Разделяем текст на части по языкам
+    text_chunks = split_by_language(text)
+    
+    # Синтез речи для каждой части
+    audio_chunks = []
+    for i, (lang, chunk) in enumerate(text_chunks, 1):
+        print(f"Обработка части {i} из {len(text_chunks)} ({lang})...")
+        try:
+            if lang == 'ru':
+                audio = model_ru.apply_tts(text=chunk,
+                                         speaker='xenia',
+                                         sample_rate=48000)
+            else:
+                audio = model_en.apply_tts(text=chunk,
+                                         speaker='en_1',
+                                         sample_rate=48000)
+            
+            # Добавляем небольшую паузу между частями (0.2 секунды тишины)
+            pause = np.zeros(int(48000 * 0.2))
+            
+            audio_chunks.append(audio.numpy())
+            audio_chunks.append(pause)
+            
+        except Exception as e:
+            print(f"Ошибка при обработке части: {chunk}")
+            print(f"Ошибка: {str(e)}")
+            continue
+    
+    # Объединяем все части
+    if audio_chunks:
+        combined_audio = np.concatenate(audio_chunks)
+    
+        # Сохранение аудио в файл
+        sf.write(output_file, combined_audio, 48000)
+        print(f"Аудио файл сохранен как '{output_file}'")
+    else:
+        print("Не удалось создать аудио: нет обработанных частей текста")
 
-print("Загрузка русской модели...")
-model_ru, _ = torch.hub.load(repo_or_dir='snakers4/silero-models',
-                            model='silero_tts',
-                            language='ru',
-                            speaker='v4_ru')
-model_ru.to(device)
-
-print("Загрузка английской модели...")
-model_en, _ = torch.hub.load(repo_or_dir='snakers4/silero-models',
-                            model='silero_tts',
-                            language='en',
-                            speaker='v3_en')
-model_en.to(device)
-
-# Чтение текста из файла
-with open('text.txt', 'r', encoding='utf-8') as f:
-    text = f.read().strip()
-
-# Разделяем текст на части по языкам
-text_chunks = split_by_language(text)
-
-# Синтез речи для каждой части
-audio_chunks = []
-for i, (lang, chunk) in enumerate(text_chunks, 1):
-    print(f"Обработка части {i} из {len(text_chunks)} ({lang})...")
-    try:
-        if lang == 'ru':
-            audio = model_ru.apply_tts(text=chunk,
-                                     speaker='xenia',
-                                     sample_rate=48000)
-        else:
-            audio = model_en.apply_tts(text=chunk,
-                                     speaker='en_1',
-                                     sample_rate=48000)
-        
-        # Добавляем небольшую паузу между частями (0.2 секунды тишины)
-        pause = np.zeros(int(48000 * 0.2))
-        
-        audio_chunks.append(audio.numpy())
-        audio_chunks.append(pause)
-        
-    except Exception as e:
-        print(f"Ошибка при обработке части: {chunk}")
-        print(f"Ошибка: {str(e)}")
-        continue
-
-# Объединяем все части
-if audio_chunks:
-    combined_audio = np.concatenate(audio_chunks)
-
-    # Сохранение аудио в файл
-    sf.write('output.wav', combined_audio, 48000)
-    print("Аудио файл сохранен как 'output.wav'")
-else:
-    print("Не удалось создать аудио: нет обработанных частей текста")
+if __name__ == '__main__':
+    main()
